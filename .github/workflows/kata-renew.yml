@@ -39,7 +39,7 @@ jobs:
           PAUSE_BETWEEN_ACCOUNTS_MS: "15000"
           # 如果需要代理，也可以添加
           # HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
-        run: python your_script_name.py # 请确保这里的文件名与你的脚本名一致
+        run: python renew_katabump.py # 请确保这里的文件名与你的脚本名一致
 
       - name: Upload Error Screenshot
         if: failure() # 仅在脚本运行失败时上传截图
