@@ -2,3 +2,6 @@ undetected-chromedriver
 selenium
 requests
 python-dotenv
+seleniumbase>=4.28.0
+playwright>=1.41.0
+pyvirtualdisplay
