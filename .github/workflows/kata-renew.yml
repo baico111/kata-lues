@@ -1,51 +1,78 @@
-name: Katabump Auto Renew
+name: Auto Renew Katabump
 
-on:
+on:  
   schedule:
-    # 每 4 天运行一次，北京时间上午 9:00 (UTC 1:00)
-    - cron: '0 1 */4 * *'
-  workflow_dispatch:
+    - cron: '17 2 * * *'  # 每天运行一次（UTC时间 02:17）
+  workflow_dispatch:  # 允许手动触发
 
 jobs:
-  renew:
-    runs-on: ubuntu-latest
-
+  auto_renew_katabump:
+    runs-on: ubuntu-22.04
+    
     steps:
-      - name: Checkout Code
+      - name: Interval Check (Strict 4-day cycle)
+        id: check
+        run: |
+          # 如果是手动触发，则跳过检查直接运行
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # 计算当前 Unix 天数 (UTC)
+          DAYS=$(( $(date -u +%s) / 86400 ))
+          REMAINDER=$(( $DAYS % 4 ))
+          
+          if [ $REMAINDER -eq 1 ]; then
+            echo "Today is the scheduled day. Starting workflow..."
+            echo "run=true" >> $GITHUB_OUTPUT
+          else
+            echo "Not today. Skipping (Current remainder: $REMAINDER, Target: 1)."
+            echo "run=false" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: Checkout repository
+        if: steps.check.outputs.run == 'true'
         uses: actions/checkout@v4
 
       - name: Set up Python
+        if: steps.check.outputs.run == 'true'
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
-      - name: Fix Chrome Environment
+      - name: Install dependencies
+        if: steps.check.outputs.run == 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
-          # 必须清理旧驱动残留，否则 uc 可能会读取缓存的 148 驱动去跑 147 的浏览器
-          rm -rf /home/runner/.local/share/undetected_chromedriver
-
-      - name: Install Dependencies
+          pip install -r requirements.txt
+          sudo apt-get update && sudo apt-get install -y xvfb
+          
+      - name: Get Chromium Version
+        if: steps.check.outputs.run == 'true'
+        id: get_version
         run: |
-          python -m pip install --upgrade pip
-          pip install requests undetected-chromedriver selenium python-dotenv
+          CHROME_VERSION=$(chromium-browser --version 2>/dev/null | grep -oE 'Chromium\s[0-9]+' | grep -oE '[0-9]+')
+          if [ -z "$CHROME_VERSION" ]; then
+            CHROME_VERSION=$(google-chrome --version 2>/dev/null | grep -oE 'Chrome\s[0-9]+' | grep -oE '[0-9]+')
+          fi
+          if [ -z "$CHROME_VERSION" ]; then
+            echo "⚠️ 无法自动检测浏览器版本，使用最新稳定版本。"
+          CHROME_VERSION="144"
+          fi
+          echo "Detected Chrome/Chromium Major Version: $CHROME_VERSION"
+          echo "CHROME_VERSION=$CHROME_VERSION" >> $GITHUB_ENV
 
-      - name: Run Renew Script
+      - name: Start X Virtual Frame Buffer (Xvfb)
+        if: steps.check.outputs.run == 'true'
+        run: Xvfb :99 -ac &
+
+      - name: Run Script in Stealth Mode (via Xvfb)
+        if: steps.check.outputs.run == 'true'
         env:
           ACCOUNTS: ${{ secrets.ACCOUNTS }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          HEADLESS: "true"
-          PAUSE_BETWEEN_ACCOUNTS_MS: "15000"
-          # 重要：通过环境变量强制脚本内 version_main 使用 147
-          # 这样脚本第一次启动就能成功，从而避开那个“Options对象复用”的代码报错
-          CHROME_VERSION: "147"
-        run: python renew_katabump.py
-
-      - name: Upload Error Screenshot
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: error-screenshots
-          path: error-*.png
+          DISPLAY: ':99'
+          HEADLESS: 'false'
+        run: |
+          python renew_katabump.py
