@@ -69,7 +69,7 @@ jobs:
       - name: Run Script in Stealth Mode (via Xvfb)
         if: steps.check.outputs.run == 'true'
         env:
-          ACCOUNTS: ${{ secrets.ACCOUNTS }}
+          Katabump_ACCOUNTS: ${{ secrets.ACCOUNTS }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           DISPLAY: ':99'
