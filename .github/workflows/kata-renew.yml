@@ -70,8 +70,8 @@ jobs:
         if: steps.check.outputs.run == 'true'
         env:
           Katabump_ACCOUNTS: ${{ secrets.ACCOUNTS }}
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
+          TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.CHAT_ID }}
           DISPLAY: ':99'
           HEADLESS: 'false'
         run: |
