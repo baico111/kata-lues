@@ -5,6 +5,7 @@ import time
 import logging
 import random
 import re
+import glob
 import requests
 import undetected_chromedriver as uc
 from datetime import datetime, timezone, timedelta
@@ -13,7 +14,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.common.exceptions import TimeoutException, WebDriverException
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 # ===================== 全局配置 =====================
 HEADLESS = os.getenv('HEADLESS', 'true').lower() == 'true'
 PAUSE_BETWEEN_ACCOUNTS_MS = int(os.getenv('PAUSE_BETWEEN_ACCOUNTS_MS', '10000'))
-TELEGRAM_BOT_TOKEN = os.getenv('BOT_TOKEN', '')
-TELEGRAM_CHAT_ID = os.getenv('CHAT_ID', '')
-ACCOUNTS_ENV = os.getenv('ACCOUNTS', '')
+TELEGRAM_BOT_TOKEN = os.getenv('TG_BOT_TOKEN', '')
+TELEGRAM_CHAT_ID = os.getenv('TG_CHAT_ID', '')
+ACCOUNTS_ENV = os.getenv('Katabump_ACCOUNTS', '')
 PROXY_SERVER = os.getenv('HTTP_PROXY', '')
 
 # ===================== 工具函数 =====================
@@ -43,7 +43,9 @@ def human_delay():
 
 def human_type(driver, selector_type, selector_value, text):
     try:
-        element = WebDriverWait(driver, 15).until(EC.visibility_of_element_located((selector_type, selector_value)))
+        element = WebDriverWait(driver, 15).until(
+            EC.visibility_of_element_located((selector_type, selector_value))
+        )
         element.clear()
         for char in text:
             element.send_keys(char)
@@ -57,17 +59,28 @@ def human_type(driver, selector_type, selector_value, text):
 def send_telegram(message, screenshot_path=None):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
+
     tz_offset = timezone(timedelta(hours=8))
     time_str = datetime.now(tz_offset).strftime("%Y-%m-%d %H:%M:%S") + " HKT"
     full_message = f"🎉 Katabump 续期通知\n\n续期时间：{time_str}\n\n{message}"
+
     try:
         if screenshot_path and os.path.exists(screenshot_path):
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
             with open(screenshot_path, 'rb') as photo:
-                requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "caption": full_message}, files={'photo': photo}, timeout=20)
+                requests.post(
+                    url,
+                    data={"chat_id": TELEGRAM_CHAT_ID, "caption": full_message},
+                    files={"photo": photo},
+                    timeout=20,
+                )
         else:
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": full_message}, timeout=10)
+            requests.post(
+                url,
+                data={"chat_id": TELEGRAM_CHAT_ID, "text": full_message},
+                timeout=10,
+            )
         logger.info("✅ Telegram 通知发送成功")
     except Exception as e:
         logger.warning(f"⚠️ Telegram 发送失败: {e}")
@@ -84,40 +97,64 @@ class KatabumpAutoRenew:
     def mask_email(self):
         try:
             if "@" in self.user:
-                prefix, domain = self.user.split('@')
+                prefix, domain = self.user.split("@", 1)
                 if len(prefix) <= 2:
                     return f"{prefix[0]}***@{domain}"
                 return f"{prefix[0]}***{prefix[-1]}@{domain}"
             return f"{self.user[0]}***{self.user[-1]}" if len(self.user) > 2 else self.user
-        except:
+        except Exception:
             return "UnknownUser"
+
+    def _safe_name(self):
+        return re.sub(r"[^a-zA-Z0-9_.-]", "_", self.user.split("@")[0])
+
+    def _take_screenshot(self, prefix):
+        if not self.driver:
+            return None
+        try:
+            filename = f"{prefix}-{self._safe_name()}.png"
+            self.driver.save_screenshot(filename)
+            self.screenshot_path = filename
+            logger.info(f"📸 已保存截图: {filename}")
+            return filename
+        except Exception as e:
+            logger.warning(f"⚠️ 截图失败: {e}")
+            return None
 
     def setup_driver(self):
         chrome_options = Options()
-        if HEADLESS: chrome_options.add_argument('--headless')
-        chrome_options.add_argument('--no-sandbox')
-        chrome_options.add_argument('--disable-dev-shm-usage')
-        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        if HEADLESS:
+            chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
         if PROXY_SERVER:
-            chrome_options.add_argument(f'--proxy-server={PROXY_SERVER}')
-        v_env = os.getenv('CHROME_VERSION', '')
+            chrome_options.add_argument(f"--proxy-server={PROXY_SERVER}")
+
+        v_env = os.getenv("CHROME_VERSION", "")
         v_main = int(v_env) if v_env.isdigit() else None
         logger.info(f"🛠️ 驱动初始化 - 指定大版本: {v_main or '自动探测'}")
+
         try:
-            self.driver = uc.Chrome(options=chrome_options, headless=HEADLESS, version_main=v_main, use_subprocess=True)
+            self.driver = uc.Chrome(
+                options=chrome_options,
+                headless=HEADLESS,
+                version_main=v_main,
+                use_subprocess=True,
+            )
         except Exception as e:
             logger.warning(f"⚠️ 强制版本启动失败，尝试降级启动: {e}")
             self.driver = uc.Chrome(options=chrome_options, headless=HEADLESS)
+
         self.driver.set_window_size(1280, 720)
 
-    def _handle_turnstile(self, context=""):
-        """优化后的 Cloudflare 验证逻辑"""
+    def _handle_turnstile(self, context="", scope_selector=None):
         try:
             container = WebDriverWait(self.driver, 15).until(
                 EC.presence_of_element_located((By.CLASS_NAME, "cf-turnstile"))
             )
             size = container.size
-            base_offset_x = -(size['width'] / 2) + (size['width'] * 0.12)
+            base_offset_x = -(size["width"] / 2) + (size["width"] * 0.12)
             rand_x = base_offset_x + random.uniform(-5, 5)
             rand_y = random.uniform(-5, 5)
 
@@ -129,10 +166,9 @@ class KatabumpAutoRenew:
             actions.pause(random.uniform(0.1, 0.25))
             actions.release()
             actions.perform()
-            
+
             logger.info(f"🖱️ {self.masked_user} - [{context}] 执行偏移点击...")
-            
-            # 轮询检查 Token
+
             validated = False
             for _ in range(15):
                 token = self.driver.execute_script(
@@ -149,31 +185,39 @@ class KatabumpAutoRenew:
             logger.error(f"❌ {self.masked_user} - [{context}] 验证交互失败: {e}")
             return False
 
+    def _handle_turnstile2(self):
+        checkbox_xpath = "//div[@class='altcha']//input[@type='checkbox' and @required]"
+        try:
+            checkbox = WebDriverWait(self.driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, checkbox_xpath))
+            )
+            logger.info(f"✅ 找到 Altcha 复选框: id={checkbox.get_attribute('id')}")
+            checkbox.click()
+            sleep(8000 + random.random() * 2000)
+        except Exception as e:
+            logger.warning(f"⚠️ Altcha 处理失败: {e}")
+
     def process(self):
         logger.info(f"🚀 开始登录账号: {self.masked_user}")
         self.driver.get("https://dashboard.katabump.com/auth/login")
         sleep(5000 + random.random() * 2000)
 
-        # --- 第一步：输入用户名 ---
         logger.info(f"📝 {self.masked_user} - 填写用户名/邮箱...")
         if not human_type(self.driver, By.CSS_SELECTOR, "input#email", self.user):
             raise Exception("未找到用户名输入框")
         sleep(2000 + random.random() * 1000)
 
-        # --- 第二步：输入密码 ---
         logger.info(f"🔒 {self.masked_user} - 填写密码...")
         if not human_type(self.driver, By.CSS_SELECTOR, "input#password", self.password):
             raise Exception("未找到密码输入框")
         sleep(2000 + random.random() * 1000)
 
-        # --- 登录页 CF 验证 ---
         self._handle_turnstile("Login Auth")
 
         logger.info(f"📤 {self.masked_user} - 点击“Login”提交登录...")
         self.driver.find_element(By.CSS_SELECTOR, 'button[type="submit"]').click()
         human_delay()
 
-        # --- 第三步： Manage Server ---
         logger.info(f"🎯 {self.masked_user} - 进入服务器详情页...")
         manage_btn = WebDriverWait(self.driver, 30).until(
             EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'See')]"))
@@ -183,12 +227,13 @@ class KatabumpAutoRenew:
         self.driver.execute_script("arguments[0].click();", manage_btn)
         human_delay()
 
-        # --- 第四步： Renew Server ---
         logger.info(f"🔄 {self.masked_user} - 准备续期流程...")
         initial_expiry = ""
         try:
             initial_expiry_element = WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.XPATH, "//div[contains(text(), 'Expiry')]/following-sibling::div"))
+                EC.presence_of_element_located(
+                    (By.XPATH, "//div[contains(text(), 'Expiry')]/following-sibling::div")
+                )
             )
             initial_expiry = initial_expiry_element.text.strip()
             logger.info(f"⌛ {self.masked_user} - 当前到期时间: {initial_expiry}")
@@ -203,13 +248,13 @@ class KatabumpAutoRenew:
             self.driver.execute_script("arguments[0].click();", renew_trigger)
             logger.info(f"📑 {self.masked_user} - 已打开 Renew 弹窗")
         except Exception as e:
+            self._take_screenshot("open-renew-error")
             raise Exception(f"无法打开弹窗: {e}")
+
         sleep(2000 + random.random() * 1000)
 
-        # --- 续期弹窗 CF 验证 ---
-        self._handle_turnstile("Renew Modal")
+        self._handle_turnstile2()
 
-        # --- 最终 Renew 按钮 ---
         try:
             confirm_btn_xpath = "//div[@id='renew-modal']//button[@type='submit' and contains(text(), 'Renew')]"
             confirm_btn = WebDriverWait(self.driver, 10).until(
@@ -218,76 +263,81 @@ class KatabumpAutoRenew:
             logger.info(f"🚀 {self.masked_user} - 点击最终 Renew 按钮...")
             self.driver.execute_script("arguments[0].click();", confirm_btn)
         except Exception as e:
+            self._take_screenshot("confirm-renew-error")
             raise Exception(f"弹窗内提交失败: {e}")
-            
+
         logger.info(f"⏳ {self.masked_user} - 等待数据更新...")
         sleep(7000 + random.random() * 2000)
 
-        # 结果核验
         try:
             alerts = self.driver.find_elements(By.CSS_SELECTOR, ".alert-danger")
             if alerts and alerts[0].is_displayed():
-                alertmsg = alerts[0].text.strip().replace('×', '')
+                alertmsg = alerts[0].text.strip().replace("×", "")
+                self._take_screenshot("renew-failed")
                 logger.warning(f"⚠️ {self.masked_user} - 续期失败: {alertmsg}")
                 return False, f"⏳ {self.masked_user}\n⚠️ 续期失败: {alertmsg}"
-            
-            final_expiry_element = self.driver.find_element(By.XPATH, "//div[contains(text(), 'Expiry')]/following-sibling::div")
+
+            final_expiry_element = self.driver.find_element(
+                By.XPATH, "//div[contains(text(), 'Expiry')]/following-sibling::div"
+            )
             final_expiry = final_expiry_element.text.strip()
             logger.info(f"✅ {self.masked_user} - 续期后到期时间: {final_expiry}")
 
             if final_expiry != initial_expiry and len(final_expiry) > 0:
+                self._take_screenshot("renew-success")
                 return True, f"✅ {self.masked_user}\n🎉 续期成功: {final_expiry}"
             else:
+                self._take_screenshot("renew-unchanged")
                 return False, f"⚠️ {self.masked_user}\n⚠️ 时间未更新 ({initial_expiry})"
         except Exception as e:
+            self._take_screenshot("verify-error")
             return False, f"❌ {self.masked_user}\n⚠️ 验证结果出错: {e}"
 
     def run(self):
-        """引入重试机制的核心运行逻辑"""
         max_retries = 3
         last_error = ""
-        
+
         for attempt in range(max_retries):
             try:
                 if not self.driver:
                     self.setup_driver()
-                
+
                 if attempt > 0:
                     logger.info(f"🔄 {self.masked_user} - 正在进行第 {attempt + 1} 次尝试...")
                     self.driver.refresh()
                     sleep(5000 + random.random() * 3000)
 
                 success, message = self.process()
-                
+
                 if success:
                     return True, message
-                else:
-                    last_error = message
-                    if "时间未更新" in message or "续期失败" in message:
-                        break
-                    
+
+                last_error = message
+                if "时间未更新" in message or "续期失败" in message:
+                    break
+
             except Exception as e:
-                last_error = f"异常：{str(e)[:50]}"
+                last_error = f"异常：{str(e)[:100]}"
                 logger.error(f"❌ {self.masked_user} 第 {attempt + 1} 次执行出错: {e}")
-                
+                self._take_screenshot(f"attempt-{attempt + 1}-error")
+
             if attempt < max_retries - 1:
                 sleep(5000 + random.random() * 5000)
-        
-        # 最终失败处理
-        self.screenshot_path = f"error-{self.user.split('@')[0]}.png"
-        if self.driver:
-            self.driver.save_screenshot(self.screenshot_path)
+
+        if not self.screenshot_path:
+            self._take_screenshot("final-error")
+
         return False, f"❌ {self.masked_user} 历经 {max_retries} 次尝试仍失败: {last_error}"
 
 # ===================== 主逻辑管理 =====================
 class MultiManager:
     def __init__(self):
-        raw_accs = re.split(r'[,;]', ACCOUNTS_ENV)
+        raw_accs = re.split(r"[,;]", ACCOUNTS_ENV)
         self.accounts = []
         for a in raw_accs:
-            if ':' in a:
-                u, p = a.split(':', 1)
-                self.accounts.append({'user': u.strip(), 'pass': p.strip()})
+            if ":" in a:
+                u, p = a.split(":", 1)
+                self.accounts.append({"user": u.strip(), "pass": p.strip()})
 
     def run_all(self):
         total = len(self.accounts)
@@ -297,31 +347,44 @@ class MultiManager:
         success_count = 0
 
         for i, acc in enumerate(self.accounts):
-            logger.info(f"\n📋 处理第 {i+1}/{total} 个账号")
-            bot = KatabumpAutoRenew(acc['user'], acc['pass'])
+            logger.info(f"\n📋 处理第 {i + 1}/{total} 个账号")
+            bot = KatabumpAutoRenew(acc["user"], acc["pass"])
             success, msg = bot.run()
-            results.append({'message': msg, 'success': success})
-            if success: success_count += 1
-            if bot.screenshot_path: last_screenshot = bot.screenshot_path
+            results.append({"message": msg, "success": success})
+
+            if success:
+                success_count += 1
+            if bot.screenshot_path:
+                last_screenshot = bot.screenshot_path
+
+            if bot.driver:
+                try:
+                    bot.driver.quit()
+                except Exception:
+                    pass
 
             if i < total - 1:
                 wait_time = PAUSE_BETWEEN_ACCOUNTS_MS + random.random() * 5000
-                logger.info(f"⏳ 账号间歇期：等待 {round(wait_time/1000)} 秒...")
+                logger.info(f"⏳ 账号间歇期：等待 {round(wait_time / 1000)} 秒...")
                 sleep(wait_time)
 
         summary = f"📊 登录汇总: {success_count}/{total} 个账号成功\n\n"
-        summary += "\n\n".join([r['message'] for r in results])
+        summary += "\n\n".join([r["message"] for r in results])
         send_telegram(summary, last_screenshot)
 
-        if last_screenshot and os.path.exists(last_screenshot):
-            import glob
-            for f in glob.glob("error-*.png"): os.remove(f)
+        for f in glob.glob("*-*.png"):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+
         logger.info("\n✅ 所有账号处理完成！")
 
 if __name__ == "__main__":
     if not ACCOUNTS_ENV:
         logger.error("❌ 未配置账号")
         exit(1)
+
     try:
         MultiManager().run_all()
     finally:
